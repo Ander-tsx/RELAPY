@@ -234,7 +234,7 @@ export default function HomePage() {
         {/* ---- Right panel ---- */}
         <section style={{ display: "flex", flexDirection: "column", gap: 20 }}>
           <SolutionDisplay solution={solution} />
-          <GraphDisplay src={solution?.graph_base64 ?? null} />
+          <GraphDisplay data={solution?.graph_data ?? null} />
           <StepsPanel steps={solution?.steps ?? []} />
         </section>
       </main>

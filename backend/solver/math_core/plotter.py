@@ -1,28 +1,23 @@
 """
-plotter.py — Generates a styled matplotlib plot of y(t) as a base64 PNG.
+plotter.py — Computes numerical y(t) data points for the interactive frontend chart.
+
+Instead of returning a static PNG, this module evaluates the SymPy solution
+over the requested t range and returns structured data (lists of t/y values)
+that the React frontend renders as an interactive, zoomable chart.
 """
 
-import io
-import base64
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")  # Non-interactive backend — must be before pyplot import
-import matplotlib.pyplot as plt
-from sympy import lambdify, symbols
+from sympy import lambdify, symbols, Heaviside, Piecewise, expand, zoo, oo, nan
+from typing import Optional
 
 
-# Color palette matching the frontend design system
-BG_COLOR   = "#0d0d0d"
-FG_COLOR   = "#e8e8e8"
-LINE_COLOR = "#6ee7b7"
-GRID_COLOR = "#6ee7b7"
-ACCENT     = "#818cf8"
+# Number of points to evaluate
+N_POINTS = 600
 
 
-def generate_plot(sympy_solution, t_range: list) -> str:
+def compute_plot_data(sympy_solution, t_range: list) -> dict:
     """
-    Convert sympy_solution to a numpy function, evaluate over t_range,
-    and return a dark-styled plot encoded as "data:image/png;base64,<data>".
+    Evaluate sympy_solution numerically over t_range and return structured data.
 
     Parameters
     ----------
@@ -33,66 +28,89 @@ def generate_plot(sympy_solution, t_range: list) -> str:
 
     Returns
     -------
-    str
-        "data:image/png;base64,..." ready to embed in an <img> tag.
+    dict with keys:
+        t_values  : list[float]   — x-axis data
+        y_values  : list[float]   — y-axis data (None where invalid)
+        y_min     : float | None
+        y_max     : float | None
+        has_error : bool
+        error_msg : str | None
     """
     t = symbols("t", real=True, positive=True)
 
     t_min, t_max = float(t_range[0]), float(t_range[1])
-    t_vals = np.linspace(t_min, t_max, 500)
+    if t_min >= t_max:
+        return _error_result("t_min debe ser menor que t_max")
 
-    # Create numerical function from SymPy expression
-    f_numeric = lambdify(t, sympy_solution, modules=["numpy"])
+    t_vals = np.linspace(t_min, t_max, N_POINTS)
+
+    # ------------------------------------------------------------------ #
+    # Expand the expression to avoid nested factored forms like           #
+    # (A*exp(3t) + B)*exp(-t) which can cause precision issues           #
+    # ------------------------------------------------------------------ #
+    try:
+        expr = expand(sympy_solution)
+    except Exception:
+        expr = sympy_solution
+
+    # ------------------------------------------------------------------ #
+    # Build numeric function via lambdify                                 #
+    # ------------------------------------------------------------------ #
+    try:
+        f_numeric = lambdify(t, expr, modules=["numpy"])
+    except Exception as exc:
+        return _error_result(f"No se pudo lambdify la expresión: {exc}")
 
     try:
-        y_vals = f_numeric(t_vals)
-        # lambdify may return a scalar when the expression is constant
-        if np.isscalar(y_vals):
-            y_vals = np.full_like(t_vals, float(y_vals))
-        y_vals = np.array(y_vals, dtype=float)
-        # Clip extreme values to avoid scale issues
-        y_vals = np.clip(y_vals, -1e6, 1e6)
-    except Exception:
-        y_vals = np.zeros_like(t_vals)
+        y_vals_raw = f_numeric(t_vals)
+
+        # Handle scalar output (constant solution)
+        if np.isscalar(y_vals_raw):
+            y_vals_raw = np.full_like(t_vals, float(y_vals_raw))
+
+        y_vals = np.array(y_vals_raw, dtype=float)
+
+    except Exception as exc:
+        return _error_result(f"Error evaluando y(t): {exc}")
 
     # ------------------------------------------------------------------ #
-    # Build figure                                                         #
+    # Smart clipping: replace only true NaN/Inf without hiding asymptotes #
     # ------------------------------------------------------------------ #
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    fig.patch.set_facecolor(BG_COLOR)
-    ax.set_facecolor(BG_COLOR)
+    finite_mask = np.isfinite(y_vals)
+    if finite_mask.sum() == 0:
+        return _error_result("La solución no produjo valores finitos en el rango dado")
 
-    # Main plot line
-    ax.plot(t_vals, y_vals, color=LINE_COLOR, linewidth=2.2, antialiased=True)
+    # Compute stats on finite values only
+    y_finite = y_vals[finite_mask]
+    y_data_min = float(np.min(y_finite))
+    y_data_max = float(np.max(y_finite))
 
-    # Zero reference line
-    ax.axhline(0, color=FG_COLOR, linewidth=0.5, alpha=0.3)
+    # Replace inf/nan with None so Recharts can handle gaps
+    y_out: list[Optional[float]] = []
+    for v in y_vals:
+        if np.isfinite(v):
+            y_out.append(round(float(v), 8))
+        else:
+            y_out.append(None)
 
-    # Grid
-    ax.grid(True, color=GRID_COLOR, alpha=0.15, linewidth=0.8)
+    t_out = [round(float(v), 8) for v in t_vals]
 
-    # Spines
-    for spine in ax.spines.values():
-        spine.set_edgecolor(FG_COLOR)
-        spine.set_alpha(0.3)
+    return {
+        "t_values":  t_out,
+        "y_values":  y_out,
+        "y_min":     round(y_data_min, 8),
+        "y_max":     round(y_data_max, 8),
+        "has_error": False,
+        "error_msg": None,
+    }
 
-    # Labels and title
-    ax.set_xlabel("t", color=FG_COLOR, fontsize=12)
-    ax.set_ylabel("y(t)", color=FG_COLOR, fontsize=12)
-    ax.set_title("Solución y(t)", color=FG_COLOR, fontsize=14, pad=12)
 
-    # Tick colors
-    ax.tick_params(colors=FG_COLOR, which="both")
-
-    plt.tight_layout(pad=1.5)
-
-    # ------------------------------------------------------------------ #
-    # Encode as base64 PNG                                                 #
-    # ------------------------------------------------------------------ #
-    buffer = io.BytesIO()
-    fig.savefig(buffer, format="png", dpi=120, bbox_inches="tight",
-                facecolor=BG_COLOR)
-    plt.close(fig)
-    buffer.seek(0)
-    encoded = base64.b64encode(buffer.read()).decode("utf-8")
-    return f"data:image/png;base64,{encoded}"
+def _error_result(msg: str) -> dict:
+    return {
+        "t_values":  [],
+        "y_values":  [],
+        "y_min":     None,
+        "y_max":     None,
+        "has_error": True,
+        "error_msg": msg,
+    }

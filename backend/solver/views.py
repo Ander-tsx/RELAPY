@@ -6,7 +6,7 @@ from .serializers import SolveRequestSerializer, SolverHistorySerializer
 from .models import SolverHistory
 from .math_core.parser import parse_equation
 from .math_core.laplace import solve_with_laplace
-from .math_core.plotter import generate_plot
+from .math_core.plotter import compute_plot_data
 
 
 class SolveView(APIView):
@@ -42,11 +42,11 @@ class SolveView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ---- Generate plot ----
+        # ---- Compute plot data ----
         try:
-            graph_b64 = generate_plot(result["sympy_solution"], t_range)
+            graph_data = compute_plot_data(result["sympy_solution"], t_range)
         except Exception as exc:
-            graph_b64 = ""
+            graph_data = {"t_values": [], "y_values": [], "has_error": True, "error_msg": str(exc)}
 
         # ---- Persist to history ----
         SolverHistory.objects.create(
@@ -63,8 +63,9 @@ class SolveView(APIView):
                 "laplace_equation":  result["laplace_equation"],
                 "laplace_solution":  result["laplace_solution"],
                 "time_solution":     result["time_solution"],
+                "plain_solution":    result["plain_solution"],
                 "steps":             result["steps"],
-                "graph_base64":      graph_b64,
+                "graph_data":        graph_data,
             },
             status=status.HTTP_200_OK,
         )

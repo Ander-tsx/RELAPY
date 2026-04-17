@@ -28,7 +28,8 @@ def _rhs_to_sympy(rhs_str: str):
       "cos(t)"         → cos(t)
     """
     t = symbols("t", real=True, positive=True)
-    s = rhs_str.strip()
+    # Convertimos cualquier 'x' a 't' para unificar la variable independiente
+    s = rhs_str.strip().replace("x", "t")
 
     if s == "0":
         return S.Zero
@@ -73,6 +74,21 @@ def _rhs_to_sympy(rhs_str: str):
     m = re.fullmatch(r"cos\(t\)", s)
     if m:
         return cos(t)
+        
+    # Polinomios o términos lineales (kt, t^n, kt^n)
+    m = re.fullmatch(r"([+-]?\d*\.?\d*)\*?t(?:\^(\d+))?", s)
+    if m:
+        coef_str = m.group(1)
+        power_str = m.group(2)
+        if coef_str in ("", "+"):
+            coef = S.One
+        elif coef_str == "-":
+            coef = S.NegativeOne
+        else:
+            coef = nsimplify(float(coef_str))
+            
+        power = int(power_str) if power_str else 1
+        return coef * (t ** power)
 
     raise ValueError(f"RHS no soportado: '{rhs_str}'")
 
@@ -201,11 +217,15 @@ def solve_with_laplace(parsed: dict, y0: float, dy0: float) -> dict:
     # LaTeX strings
     laplace_solution_latex = f"Y(s) = {latex(Y_expr)}"
     time_solution_latex    = f"y(t) = {latex(y_t)}"
+    
+    # GeoGebra friendly plain string (using x instead of t)
+    plain_solution_str     = str(y_t).replace('t', 'x')
 
     return {
         "laplace_equation": laplace_eq_latex,
         "laplace_solution": laplace_solution_latex,
         "time_solution":    time_solution_latex,
+        "plain_solution":   plain_solution_str,
         "sympy_solution":   y_t,
         "steps":            steps,
     }
